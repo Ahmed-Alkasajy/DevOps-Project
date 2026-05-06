@@ -2,8 +2,8 @@ version: '3.9'
 
 services:
   backend:
-    build: ./book-shop
-    env_file: ./book-shop/.env
+    build: .
+    env_file: .env
     volumes:
       - static_volume:/app/staticfiles
     depends_on:
@@ -15,7 +15,7 @@ services:
       
   db:
     image: postgres:15
-    env_file: ./book-shop/.env
+    env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:

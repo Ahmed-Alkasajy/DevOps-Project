@@ -1,5 +1,24 @@
-# Django 4.0.4 Tutorial Series
+# students:
+-Ahmad Yaseer 20210401
+-Loay Saleh 20220373
 
-Full Documentation is here
 
-[Django 4.0.4 Best Practices Tutorial : Part 1](https://ayat.hashnode.dev/django-404-best-practices-tutorial-part-1)
+
+# Book Shop - Docker Setup
+
+## Requirements
+- Docker
+- Docker Compose
+
+## Run the app
+
+```bash
+cd book-shop
+cp .env.example .env
+# Fill in your values in .env
+docker compose up --build
+```
+
+Visit: http://localhost:8000
+
+

@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   backend:
-    build: .
+    image: ${REGISTRY_NAME}/${IMAGE_NAME}:${IMAGE_VERSION}
     env_file: .env
     volumes:
       - static_volume:/app/staticfiles

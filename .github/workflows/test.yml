@@ -1,0 +1,149 @@
+name: TEST - Image-First Pipeline
+
+on:
+  push:
+    branches:
+      - test
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: book-shop
+        run: |
+          pip install -r requirements.txt
+
+      - name: Collect static files
+        working-directory: book-shop
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ALLOWED_HOSTS: localhost
+        run: |
+          python manage.py collectstatic --noinput
+
+      - name: Build fresh artifact
+        working-directory: book-shop
+        run: |
+          ARTIFACT_NAME="app-test-${{ github.sha }}.tar.gz"
+          tar -czf /tmp/${ARTIFACT_NAME} \
+            --exclude='.git' \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            --exclude='db.sqlite3' \
+            .
+          mkdir -p artifacts
+          cp /tmp/${ARTIFACT_NAME} artifacts/${ARTIFACT_NAME}
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
+
+      - name: Build Docker image from artifact
+        working-directory: book-shop
+        run: |
+          docker build \
+            --build-arg ARTIFACT_NAME=${{ env.ARTIFACT_NAME }} \
+            -t ${{ vars.REGISTRY_NAME }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_VERSION }}-test \
+            -t ${{ vars.REGISTRY_NAME }}/${{ vars.IMAGE_NAME }}:test-latest \
+            .
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push image to Docker Hub
+        run: |
+          docker push ${{ vars.REGISTRY_NAME }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_VERSION }}-test
+          docker push ${{ vars.REGISTRY_NAME }}/${{ vars.IMAGE_NAME }}:test-latest
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            mkdir -p ~/deployments/test
+            cat > ~/deployments/test/.env << EOF
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            ALLOWED_HOSTS=${{ vars.EC2_HOST }},localhost
+            REGISTRY_NAME=${{ vars.REGISTRY_NAME }}
+            IMAGE_NAME=${{ vars.IMAGE_NAME }}
+            IMAGE_VERSION=test-latest
+            EOF
+
+            cat > ~/deployments/test/docker-compose.yml << 'COMPOSE'
+            version: '3.9'
+            services:
+              backend:
+                image: ${REGISTRY_NAME}/${IMAGE_NAME}:${IMAGE_VERSION}
+                env_file: .env
+                volumes:
+                  - static_volume:/app/staticfiles
+                depends_on:
+                  - db
+                networks:
+                  - bookshop_net
+              db:
+                image: postgres:15
+                env_file: .env
+                volumes:
+                  - postgres_data:/var/lib/postgresql/data
+                networks:
+                  - bookshop_net
+              nginx:
+                image: nginx:alpine
+                ports:
+                  - "8001:80"
+                volumes:
+                  - ./nginx.conf:/etc/nginx/conf.d/default.conf
+                  - static_volume:/app/staticfiles
+                depends_on:
+                  - backend
+                networks:
+                  - bookshop_net
+            volumes:
+              postgres_data:
+              static_volume:
+            networks:
+              bookshop_net:
+                driver: bridge
+            COMPOSE
+
+            cat > ~/deployments/test/nginx.conf << 'NGINX'
+            upstream django {
+                server backend:8000;
+            }
+            server {
+                listen 80;
+                location / {
+                    proxy_pass http://django;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                }
+                location /static/ {
+                    alias /app/staticfiles/;
+                }
+            }
+            NGINX
+
+            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+            cd ~/deployments/test
+            docker compose -p test down
+            docker compose -p test pull
+            docker compose -p test up -d
